@@ -8,13 +8,13 @@ namespace vsgExamples
     class ExampleBase : public vsg::Object
     {
     public:
-        ExampleBase(){}
+		ExampleBase() {}
 
-        // one time allocation of resource etc, returns non zero if error
-        virtual int Init(int argc, char** argv) = 0;
+		// allocate resources, returns non zero on error
+		virtual int init(int argc, char** argv) = 0;
 
         // update and render frame, if returns non zero then stop updating
-        virtual int Update() = 0;
+        virtual int frame() = 0;
 
     protected:
         virtual ~ExampleBase(){}
