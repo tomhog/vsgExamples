@@ -1,5 +1,6 @@
 add_subdirectory(vsgcompute)
 add_subdirectory(vsgdraw)
+add_subdirectory(vsgdrawdesktop)
 add_subdirectory(vsggroups)
 add_subdirectory(vsgnodes)
 add_subdirectory(vsgobjects)
