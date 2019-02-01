@@ -67,4 +67,7 @@ DerivedData/
 *.iml
 build/
 local.properties
+*.pdb
+*.log
+*.tlog
 
