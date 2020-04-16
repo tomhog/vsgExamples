@@ -37,7 +37,7 @@ int main(int argc, char** argv)
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr} // { binding, descriptorTpe, descriptorCount, stageFlags, pImmutableSamplers}
     };
 
-    vsg::DescriptorSetLayouts descriptorSetLayouts{vsg::DescriptorSetLayout::create(descriptorBindings)};
+    auto descriptorSetLayout = vsg::DescriptorSetLayout::create(descriptorBindings);
 
     vsg::PushConstantRanges pushConstantRanges
     {
@@ -68,20 +68,20 @@ int main(int argc, char** argv)
         vsg::DepthStencilState::create()
     };
 
-    auto pipelineLayout = vsg::PipelineLayout::create(descriptorSetLayouts, pushConstantRanges);
+    auto pipelineLayout = vsg::PipelineLayout::create(vsg::DescriptorSetLayouts{descriptorSetLayout}, pushConstantRanges);
     auto graphicsPipeline = vsg::GraphicsPipeline::create(pipelineLayout, vsg::ShaderStages{vertexShader, fragmentShader}, pipelineStates);
     auto bindGraphicsPipeline = vsg::BindGraphicsPipeline::create(graphicsPipeline);
 
     // create texture image and associated DescriptorSets and binding
     auto texture = vsg::DescriptorImage::create(vsg::Sampler::create(), textureData, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 
-    auto descriptorSet = vsg::DescriptorSet::create(descriptorSetLayouts, vsg::Descriptors{texture});
-    auto bindDescriptorSets = vsg::BindDescriptorSets::create(VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline->getPipelineLayout(), 0, vsg::DescriptorSets{descriptorSet});
+    auto descriptorSet = vsg::DescriptorSet::create(descriptorSetLayout, vsg::Descriptors{texture});
+    auto bindDescriptorSet = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline->getPipelineLayout(), 0, descriptorSet);
 
     // create StateGroup as the root of the scene/command graph to hold the GraphicsProgram, and binding of Descriptors to decorate the whole graph
     auto scenegraph = vsg::StateGroup::create();
     scenegraph->add(bindGraphicsPipeline);
-    scenegraph->add(bindDescriptorSets);
+    scenegraph->add(bindDescriptorSet);
 
     // set up model transformation node
     auto transform = vsg::MatrixTransform::create(); // VK_SHADER_STAGE_VERTEX_BIT
@@ -93,13 +93,13 @@ int main(int argc, char** argv)
     auto vertices = vsg::vec3Array::create(
     {
         {-0.5f, -0.5f, 0.0f},
-        {0.5f,  -0.5f, 0.05f},
+        {0.5f,  -0.5f, 0.0f},
         {0.5f , 0.5f, 0.0f},
         {-0.5f, 0.5f, 0.0f},
         {-0.5f, -0.5f, -0.5f},
         {0.5f,  -0.5f, -0.5f},
-        {0.5f , 0.5f, -0.5},
-        {-0.5f, 0.5f, -0.5}
+        {0.5f , 0.5f, -0.5f},
+        {-0.5f, 0.5f, -0.5f}
     }); // VK_FORMAT_R32G32B32_SFLOAT, VK_VERTEX_INPUT_RATE_INSTANCE, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE
 
     auto colors = vsg::vec3Array::create(
@@ -161,8 +161,8 @@ int main(int argc, char** argv)
     auto lookAt = vsg::LookAt::create(vsg::dvec3(1.0, 1.0, 1.0), vsg::dvec3(0.0, 0.0, 0.0), vsg::dvec3(0.0, 0.0, 1.0));
     auto camera = vsg::Camera::create(perspective, lookAt, viewport);
 
-    // add a GraphicsStage to the Window to do dispatch of the command graph to the commnad buffer(s)
-    window->addStage(vsg::GraphicsStage::create(scenegraph, camera));
+    auto commandGraph = vsg::createCommandGraphForView(window, camera, scenegraph);
+    viewer->assignRecordAndSubmitTaskAndPresentation({commandGraph});
 
     // compile the Vulkan objects
     viewer->compile();
@@ -180,9 +180,11 @@ int main(int argc, char** argv)
         float time = std::chrono::duration<float, std::chrono::seconds::period>(viewer->getFrameStamp()->time - viewer->start_point()).count();
         transform->setMatrix(vsg::rotate(time * vsg::radians(90.0f), vsg::vec3(0.0f, 0.0, 1.0f)));
 
-        viewer->populateNextFrame();
+        viewer->update();
 
-        viewer->submitNextFrame();
+        viewer->recordAndSubmit();
+
+        viewer->present();
     }
 
     // clean up done automatically thanks to ref_ptr<>

@@ -6,11 +6,11 @@
 int main(int argc, char** argv)
 {
     vsg::CommandLine arguments(&argc, argv);
-    auto width = arguments.value(1024u, "--width");
-    auto height = arguments.value(1024u, "--height");
+    auto width = arguments.value(1024, "--width");
+    auto height = arguments.value(1024, "--height");
     auto debugLayer = arguments.read({"--debug","-d"});
     auto apiDumpLayer = arguments.read({"--api","-a"});
-    auto workgroupSize = arguments.value<uint32_t>(32, "-w");
+    auto workgroupSize = arguments.value(32, "-w");
     auto outputFilename = arguments.value<std::string>("", "-o");
     auto outputAsFloat = arguments.read("-f");
     if (arguments.errors()) return arguments.writeErrorMessages(std::cerr);
@@ -33,23 +33,34 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    auto dimensions = vsg::uintArray::create({width, height, workgroupSize});
-    computeStage->setSpecializationMapEntries(vsg::ShaderStage::SpecializationMapEntries{{0, 0, 4}, {1, 4, 4}, {2, 8, 4}});
-    computeStage->setSpecializationData(dimensions);
+    computeStage->setSpecializationConstants({
+        {0, vsg::intValue::create(width)},
+        {1, vsg::intValue::create(height)},
+        {2, vsg::intValue::create(workgroupSize)}
+    });
 
     vsg::Names validatedNames = vsg::validateInstancelayerNames(requestedLayers);
 
+    // get the physical device that suports the required compute queue
     vsg::ref_ptr<vsg::Instance> instance = vsg::Instance::create(instanceExtensions, validatedNames);
-    vsg::ref_ptr<vsg::PhysicalDevice> physicalDevice = vsg::PhysicalDevice::create(instance, VK_QUEUE_COMPUTE_BIT);
-    vsg::ref_ptr<vsg::Device> device = vsg::Device::create(physicalDevice, validatedNames, deviceExtensions);
+    auto [physicalDevice, computeQueueFamily] = instance->getPhysicalDeviceAndQueueFamily(VK_QUEUE_COMPUTE_BIT);
+    if (!physicalDevice || computeQueueFamily<0)
+    {
+        std::cout<<"No vkPhysicalDevice available that supports compute."<<std::endl;
+        return 1;
+    }
+
+    // create the logical device with specified queue, layers and extensions
+    vsg::QueueSettings queueSettings{vsg::QueueSetting{computeQueueFamily, {1.0}}};
+    vsg::ref_ptr<vsg::Device> device = vsg::Device::create(physicalDevice, queueSettings, validatedNames, deviceExtensions);
     if (!device)
     {
-        std::cout<<"Unable to create required Vulkan Device."<<std::endl;
+        std::cout<<"Unable to create required vkDevice."<<std::endl;
         return 1;
     }
 
     // get the queue for the compute commands
-    auto computeQueue = device->getQueue(physicalDevice->getComputeFamily());
+    auto computeQueue = device->getQueue(computeQueueFamily);
 
     // allocate output storage buffer
     VkDeviceSize bufferSize = sizeof(vsg::vec4) * width * height;
@@ -59,26 +70,26 @@ int main(int argc, char** argv)
 
     // set up DescriptorSetLayout, DecriptorSet and BindDescriptorSets
     vsg::DescriptorSetLayoutBindings descriptorBindings { {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr} };
-    vsg::DescriptorSetLayouts descriptorSetLayouts { vsg::DescriptorSetLayout::create(descriptorBindings) };
+    auto descriptorSetLayout = vsg::DescriptorSetLayout::create(descriptorBindings);
     vsg::Descriptors descriptors { vsg::DescriptorBuffer::create(vsg::BufferDataList{vsg::BufferData(buffer, 0, bufferSize)}, 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) };
 
-    vsg::ref_ptr<vsg::DescriptorSet> descriptorSet = vsg::DescriptorSet::create(descriptorSetLayouts, descriptors);
-    vsg::ref_ptr<vsg::PipelineLayout> pipelineLayout = vsg::PipelineLayout::create(descriptorSetLayouts, vsg::PushConstantRanges{});
-    vsg::ref_ptr<vsg::BindDescriptorSets> bindDescriptorSets = vsg::BindDescriptorSets::create(VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, vsg::DescriptorSets{descriptorSet});
+    auto descriptorSet = vsg::DescriptorSet::create(descriptorSetLayout, descriptors);
+    auto pipelineLayout = vsg::PipelineLayout::create(vsg::DescriptorSetLayouts{descriptorSetLayout}, vsg::PushConstantRanges{});
+    auto bindDescriptorSet = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, descriptorSet);
 
     // set up the compute pipeline
-    vsg::ref_ptr<vsg::ComputePipeline> pipeline = vsg::ComputePipeline::create(pipelineLayout, computeStage);
-    vsg::ref_ptr<vsg::BindComputePipeline> bindPipeline = vsg::BindComputePipeline::create(pipeline);
+    auto pipeline = vsg::ComputePipeline::create(pipelineLayout, computeStage);
+    auto bindPipeline = vsg::BindComputePipeline::create(pipeline);
 
     // assign to a CommandGraph that binds the Pipeline and DescritorSets and calls Dispatch
-    vsg::ref_ptr<vsg::StateGroup> commandGraph = vsg::StateGroup::create();
+    auto commandGraph = vsg::StateGroup::create();
     commandGraph->add(bindPipeline);
-    commandGraph->add(bindDescriptorSets);
+    commandGraph->add(bindDescriptorSet);
     commandGraph->addChild(vsg::Dispatch::create(uint32_t(ceil(float(width)/float(workgroupSize))), uint32_t(ceil(float(height)/float(workgroupSize))), 1));
 
     // compile the Vulkan objects
     vsg::CompileTraversal compileTraversal(device);
-    compileTraversal.context.commandPool = vsg::CommandPool::create(device, physicalDevice->getComputeFamily());
+    compileTraversal.context.commandPool = vsg::CommandPool::create(device, computeQueueFamily);
     compileTraversal.context.descriptorPool = vsg::DescriptorPool::create(device, 1, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}});
 
     commandGraph->accept(compileTraversal);
@@ -91,8 +102,8 @@ int main(int argc, char** argv)
     // submit commands
     vsg::submitCommandsToQueue(device, compileTraversal.context.commandPool, fence, 100000000000, computeQueue, [&](vsg::CommandBuffer& commandBuffer)
     {
-        vsg::DispatchTraversal dispatchTraversals(&commandBuffer);
-        commandGraph->accept(dispatchTraversals);
+        vsg::RecordTraversal recordTraversal(&commandBuffer);
+        commandGraph->accept(recordTraversal);
     });
 
     auto time = std::chrono::duration<float, std::chrono::milliseconds::period>(std::chrono::steady_clock::now()-startTime).count();

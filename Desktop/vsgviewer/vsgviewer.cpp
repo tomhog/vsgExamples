@@ -1,5 +1,10 @@
 #include <vsg/all.h>
 
+#ifdef USE_VSGXCHANGE
+#include <vsgXchange/ReaderWriter_all.h>
+#include <vsgXchange/ShaderCompiler.h>
+#endif
+
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -9,7 +14,8 @@
 int main(int argc, char** argv)
 {
     // set up defaults and read command line arguments to override them
-    auto windowTraits = vsg::Window::Traits::create();
+    auto options = vsg::Options::create();
+    auto windowTraits = vsg::WindowTraits::create();
     windowTraits->windowTitle = "vsgviewer";
 
     // set up defaults and read command line arguments to override them
@@ -25,18 +31,22 @@ int main(int argc, char** argv)
     if (arguments.read({"--fullscreen", "--fs"})) windowTraits->fullscreen = true;
     if (arguments.read({"--window", "-w"}, windowTraits->width, windowTraits->height)) { windowTraits->fullscreen = false; }
     if (arguments.read({"--no-frame", "--nf"})) windowTraits->decoration = false;
+    if (arguments.read("--or")) windowTraits->overrideRedirect = true;
     auto numFrames = arguments.value(-1, "-f");
     auto pathFilename = arguments.value(std::string(),"-p");
     auto loadLevels = arguments.value(0, "--load-levels");
     auto horizonMountainHeight = arguments.value(-1.0, "--hmh");
     auto useDatabasePager = arguments.read("--pager");
     auto maxPageLOD = arguments.value(-1, "--max-plod");
-    arguments.read({"--window", "-w"}, windowTraits->width, windowTraits->height);
+    arguments.read("--screen", windowTraits->screenNum);
+    arguments.read("--display", windowTraits->display);
 
     if (arguments.errors()) return arguments.writeErrorMessages(std::cerr);
 
-    // read shaders
-    vsg::Paths searchPaths = vsg::getEnvPaths("VSG_FILE_PATH");
+#ifdef USE_VSGXCHANGE
+    // add use of vsgXchange's support for reading and writing 3rd party file formats
+    options->readerWriter = vsgXchange::ReaderWriter_all::create();
+#endif
 
     using VsgNodes = std::vector<vsg::ref_ptr<vsg::Node>>;
     VsgNodes vsgNodes;
@@ -50,7 +60,7 @@ int main(int argc, char** argv)
 
         path = vsg::filePath(filename);
 
-        auto loaded_scene = vsg::read_cast<vsg::Node>(filename);
+        auto loaded_scene = vsg::read_cast<vsg::Node>(filename, options);
         if (loaded_scene)
         {
             vsgNodes.push_back(loaded_scene);
@@ -167,17 +177,8 @@ int main(int argc, char** argv)
         if (maxPageLOD>=0) databasePager->targetMaxNumPagedLODWithHighResSubgraphs = maxPageLOD;
     }
 
-    // add a GraphicsStage to the Window to do dispatch of the command graph to the command buffer(s)
-    auto graphicsStage = vsg::GraphicsStage::create(vsg_scene, camera);
-    graphicsStage->databasePager = databasePager;
-    window->addStage(graphicsStage);
-
-    // compile the Vulkan objects
-    viewer->compile();
-
     // add close handler to respond the close window button and pressing escape
     viewer->addEventHandler(vsg::CloseHandler::create(viewer));
-
 
     if (pathFilename.empty())
     {
@@ -198,18 +199,22 @@ int main(int argc, char** argv)
         viewer->addEventHandler(vsg::AnimationPathHandler::create(camera, animationPath, viewer->start_point()));
     }
 
+    auto commandGraph = vsg::createCommandGraphForView(window, camera, vsg_scene);
+    viewer->assignRecordAndSubmitTaskAndPresentation({commandGraph}, databasePager);
+
+    viewer->compile();
 
     // rendering main loop
     while (viewer->advanceToNextFrame() && (numFrames<0 || (numFrames--)>0))
     {
-        if (databasePager) databasePager->updateSceneGraph(viewer->getFrameStamp());
-
         // pass any events into EventHandlers assigned to the Viewer
         viewer->handleEvents();
 
-        viewer->populateNextFrame();
+        viewer->update();
 
-        viewer->submitNextFrame();
+        viewer->recordAndSubmit();
+
+        viewer->present();
     }
 
     // clean up done automatically thanks to ref_ptr<>
