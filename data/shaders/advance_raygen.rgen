@@ -1,0 +1,145 @@
+#version 460
+#extension GL_NV_ray_tracing : require
+
+#define SWS_PRIMARY_HIT_SHADERS_IDX     0
+#define SWS_PRIMARY_MISS_SHADERS_IDX    0
+#define SWS_SHADOW_HIT_SHADERS_IDX      1
+#define SWS_SHADOW_MISS_SHADERS_IDX     1
+
+#define VSG_SCENE_AS_SET                0
+#define VSG_SCENE_AS_BINDING            0
+#define VSG_RESULT_IMAGE_SET            0
+#define VSG_RESULT_IMAGE_BINDING        1
+#define VSG_CAMDATA_SET                 0
+#define VSG_CAMDATA_BINDING             2
+
+//
+#define VSG_LOC_PRIMARY_RAY             0
+#define VSG_LOC_HIT_ATTRIBS             1
+#define VSG_LOC_SHADOW_RAY              2
+
+#define VSG_MAX_RECURSION               10
+
+struct RayPayload {
+    vec4 colorAndDist;
+    vec4 normalAndObjId;
+};
+struct ShadowRayPayload {
+    float distance;
+};
+
+
+layout(set = VSG_SCENE_AS_SET,     binding = VSG_SCENE_AS_BINDING)            uniform accelerationStructureNV Scene;
+layout(set = VSG_RESULT_IMAGE_SET, binding = VSG_RESULT_IMAGE_BINDING, rgba8) uniform image2D ResultImage;
+
+layout(set = VSG_CAMDATA_SET,      binding = VSG_CAMDATA_BINDING, std140) uniform SceneParams 
+{
+	mat4 inverseViewMatrix;
+	mat4 inverseProjectionMatrix;
+	vec4 lightPosAndIntensity;
+} sceneParams;
+
+layout(location = VSG_LOC_PRIMARY_RAY) rayPayloadNV RayPayload PrimaryRay;
+layout(location = VSG_LOC_SHADOW_RAY)  rayPayloadNV ShadowRayPayload ShadowRay;
+
+const float kBunnyRefractionIndex = 1.0f / 1.31f; // ice
+
+void main() {
+	const vec2 pixelCenter = vec2(gl_LaunchIDNV.xy) + vec2(0.5);
+	const vec2 normalisedPixelCoord = pixelCenter/vec2(gl_LaunchSizeNV.xy);
+	vec2 clipSpaceCoord = normalisedPixelCoord * 2.0 - 1.0;
+
+	vec4 origin = sceneParams.inverseViewMatrix * vec4(0,0,0,1);
+	vec4 viewSpaceDir = sceneParams.inverseProjectionMatrix * vec4(clipSpaceCoord.x, clipSpaceCoord.y, 1, 1) ;
+	vec4 direction = sceneParams.inverseViewMatrix * vec4(normalize(viewSpaceDir.xyz), 0) ;
+
+    const uint rayFlags = gl_RayFlagsOpaqueNV;
+    const uint shadowRayFlags = gl_RayFlagsOpaqueNV | gl_RayFlagsTerminateOnFirstHitNV;
+
+    const uint cullMask = 0xFF;
+
+    const uint stbRecordStride = 1;
+
+	float tmin = 0.001;
+	float tmax = 10000.0; // this is camera fov y in example
+
+    vec3 finalColor = vec3(0.0f);
+
+    for (int i = 0; i < VSG_MAX_RECURSION; ++i) {
+        traceNV(Scene,
+                 rayFlags,
+                 cullMask,
+                 VSG_PRIMARY_HIT_SHADERS_IDX,
+                 stbRecordStride,
+                 VSG_PRIMARY_MISS_SHADERS_IDX,
+                 origin,
+                 tmin,
+                 direction,
+                 tmax,
+                 VSG_LOC_PRIMARY_RAY);
+
+        const vec3 hitColor = PrimaryRay.colorAndDist.rgb;
+        const float hitDistance = PrimaryRay.colorAndDist.w;
+
+        // if hit background - quit
+        if (hitDistance < 0.0f) {
+            finalColor += hitColor;
+            break;
+        } else {
+            const vec3 hitNormal = PrimaryRay.normalAndObjId.xyz;
+            const float objectId = PrimaryRay.normalAndObjId.w;
+
+            const vec3 hitPos = origin + direction * hitDistance;
+
+            if (objectId == OBJECT_ID_TEAPOT) {
+                // our teapot is mirror, so reflect and continue
+
+                origin = hitPos + hitNormal * 0.001f;
+                direction = reflect(direction, hitNormal);
+            } else if (objectId == OBJECT_ID_BUNNY) {
+                // our bunny is made of ice, so refract and continue
+
+                const float NdotD = dot(hitNormal, direction);
+
+                vec3 refrNormal = hitNormal;
+                float refrEta;
+
+                if(NdotD > 0.0f) {
+                    refrNormal = -hitNormal;
+                    refrEta = 1.0f / kBunnyRefractionIndex;
+                } else {
+                    refrNormal = hitNormal;
+                    refrEta = kBunnyRefractionIndex;
+                }
+
+                origin = hitPos + direction * 0.001f;
+                direction = refract(direction, refrNormal, refrEta);
+            } else {
+                // we hit diffuse primitive - simple lambertian
+
+                const vec3 toLight = normalize(Params.lightPosAndIntensity.xyz);
+                const vec3 shadowRayOrigin = hitPos + hitNormal * 0.001f;
+
+                traceNV(Scene,
+                         shadowRayFlags,
+                         cullMask,
+                         VSG_SHADOW_HIT_SHADERS_IDX,
+                         stbRecordStride,
+                         VSG_SHADOW_MISS_SHADERS_IDX,
+                         shadowRayOrigin,
+                         0.0f,
+                         toLight,
+                         tmax,
+                         VSG_LOC_SHADOW_RAY);
+
+                const float lighting = (ShadowRay.distance > 0.0f) ? Params.lightPosAndIntensity.w : max(Params.lightPosAndIntensity.w, dot(hitNormal, toLight));
+
+                finalColor += hitColor * lighting;
+
+                break;
+            }
+        }
+    }
+
+    imageStore(ResultImage, ivec2(gl_LaunchIDNV.xy), vec4(LinearToSrgb(finalColor), 1.0f));
+}

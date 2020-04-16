@@ -33,6 +33,7 @@ struct RayTracingUniform
 {
     vsg::mat4 viewInverse;
     vsg::mat4 projInverse;
+    vsg::vec4 lightPosAndIntensity;
 };
 
 class RayTracingUniformValue : public vsg::Inherit<vsg::Value<RayTracingUniform>, RayTracingUniformValue>
@@ -106,17 +107,20 @@ int main(int argc, char** argv)
     const uint32_t shaderIndexMiss = 1;
     const uint32_t shaderIndexClosestHit = 2;
 
-    vsg::ref_ptr<vsg::ShaderStage> raygenShader = vsg::ShaderStage::read(VK_SHADER_STAGE_RAYGEN_BIT_NV, "main", vsg::findFile("shaders/simple_raygen.spv", searchPaths));
-    vsg::ref_ptr<vsg::ShaderStage> missShader = vsg::ShaderStage::read(VK_SHADER_STAGE_MISS_BIT_NV, "main", vsg::findFile("shaders/simple_miss.spv", searchPaths));
-    vsg::ref_ptr<vsg::ShaderStage> closesthitShader = vsg::ShaderStage::read(VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV, "main", vsg::findFile("shaders/simple_closesthit.spv", searchPaths));
+    vsg::ref_ptr<vsg::ShaderStage> raygenShader = vsg::ShaderStage::read(VK_SHADER_STAGE_RAYGEN_BIT_NV, "main", vsg::findFile("shaders/advanced_raygen.spv", searchPaths));
+    vsg::ref_ptr<vsg::ShaderStage> missShader = vsg::ShaderStage::read(VK_SHADER_STAGE_MISS_BIT_NV, "main", vsg::findFile("shaders/advanced_miss.spv", searchPaths));
+    vsg::ref_ptr<vsg::ShaderStage> closesthitShader = vsg::ShaderStage::read(VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV, "main", vsg::findFile("shaders/advanced_closesthit.spv", searchPaths));
 
-    if (!raygenShader || !missShader || !closesthitShader)
+    vsg::ref_ptr<vsg::ShaderStage> shadow_missShader = vsg::ShaderStage::read(VK_SHADER_STAGE_MISS_BIT_NV, "main", vsg::findFile("shaders/shadow_miss.spv", searchPaths));
+    vsg::ref_ptr<vsg::ShaderStage> shadow_closesthitShader = vsg::ShaderStage::read(VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV, "main", vsg::findFile("shaders/shadow_closesthit.spv", searchPaths));
+
+    if (!raygenShader || !missShader || !closesthitShader || !shadow_missShader || !shadow_closesthitShader)
     {
         std::cout<<"Could not create shaders."<<std::endl;
         return 1;
     }
 
-    auto shaderStages = vsg::ShaderStages{ raygenShader, missShader, closesthitShader };
+    auto shaderStages = vsg::ShaderStages{ raygenShader, missShader, closesthitShader, shadow_missShader, shadow_closesthitShader };
 
 
     // set up shader groups
@@ -140,6 +144,7 @@ int main(int argc, char** argv)
     auto loaded_scene = vsg::read_cast<vsg::Node>(vsg::findFile("models/raytracing_scene.vsgt", searchPaths));
     vsg::AccelerationStructureBuildTraversal buildAccelStruct(window->device());
     loaded_scene->accept(buildAccelStruct);
+    buildAccelStruct.createMeshBufferDescriptors();
 
 
     // create storage image to render into
